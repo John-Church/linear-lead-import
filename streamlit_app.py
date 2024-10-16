@@ -122,6 +122,48 @@ def create_or_update_linear_projects_and_issues(standardized_data, api_key):
             return
         team_id = response_data["data"]["teams"]["nodes"][0]["id"]
 
+    # Get or create "New Contact" label
+    label_query = """
+    query($teamId: String!) {
+        issueLabels(filter: {team: {id: {eq: $teamId}}, name: {eq: "New Contact"}}) {
+            nodes {
+                id
+                name
+            }
+        }
+    }
+    """
+    label_variables = {
+        "teamId": team_id
+    }
+    label_response = requests.post(url, json={"query": label_query, "variables": label_variables}, headers=headers)
+    label_data = label_response.json()
+    if label_data["data"]["issueLabels"]["nodes"]:
+        new_contact_label_id = label_data["data"]["issueLabels"]["nodes"][0]["id"]
+    else:
+        # Create "New Contact" label if it doesn't exist
+        create_label_mutation = """
+        mutation($name: String!, $teamId: String!) {
+            issueLabelCreate(input: {name: $name, teamId: $teamId}) {
+                success
+                issueLabel {
+                    id
+                }
+            }
+        }
+        """
+        create_label_variables = {
+            "name": "New Contact",
+            "teamId": team_id
+        }
+        create_label_response = requests.post(url, json={"query": create_label_mutation, "variables": create_label_variables}, headers=headers)
+        create_label_data = create_label_response.json()
+        if create_label_data["data"]["issueLabelCreate"]["success"]:
+            new_contact_label_id = create_label_data["data"]["issueLabelCreate"]["issueLabel"]["id"]
+        else:
+            st.error("Failed to create 'New Contact' label")
+            return
+
     total_companies = len(set(item['company']['name'] for item in standardized_data))
     st.write(f"Found {total_companies} unique companies in the CSV.")
 
@@ -249,10 +291,10 @@ def create_or_update_linear_projects_and_issues(standardized_data, api_key):
         if existing_issues:
             stats["issues_existing"] += 1
         else:
-            # Create new issue
+            # Create new issue with "New Contact" label
             issue_mutation = """
-            mutation($title: String!, $description: String!, $teamId: String!, $projectId: String!) {
-                issueCreate(input: {title: $title, description: $description, teamId: $teamId, projectId: $projectId}) {
+            mutation($title: String!, $description: String!, $teamId: String!, $projectId: String!, $labelIds: [String!]) {
+                issueCreate(input: {title: $title, description: $description, teamId: $teamId, projectId: $projectId, labelIds: $labelIds}) {
                     success
                     issue {
                         id
@@ -263,8 +305,9 @@ def create_or_update_linear_projects_and_issues(standardized_data, api_key):
             variables = {
                 "title": issue_title,
                 "description": format_individual_description(individual),
-                "teamId": str(team_id),  # Convert to string
-                "projectId": str(project_id)  # Convert to string
+                "teamId": str(team_id),
+                "projectId": str(project_id),
+                "labelIds": [str(new_contact_label_id)]
             }
             response = requests.post(url, json={"query": issue_mutation, "variables": variables}, headers=headers)
             response_data = response.json()
