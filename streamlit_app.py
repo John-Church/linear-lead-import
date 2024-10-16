@@ -3,7 +3,7 @@ import pandas as pd
 import requests
 import json
 
-st.title("🎈 CSV to Linear Issue Importer")
+st.title("🎈 CSV to Linear Project/Issue Importer")
 
 def detect_csv_format(df):
     """Detect the format of the CSV based on column names."""
@@ -73,12 +73,18 @@ def standardize_csv_data(df, csv_format):
     return standardized_data
 
 def format_company_description(company):
+    summary = f"Company: {company['name']}\n"
+    summary += f"Domain: {company.get('domain', 'N/A')}\n"
+    summary += f"Industry: {company.get('industry', 'N/A')}"
+    return summary
+
+def format_company_full_description(company):
     return "\n".join([f"{key.replace('_', ' ').title()}: {value}" for key, value in company.items() if value])
 
 def format_individual_description(individual):
     return "\n".join([f"{key.replace('_', ' ').title()}: {value}" for key, value in individual.items() if value])
 
-def create_or_update_linear_issues(standardized_data, api_key):
+def create_or_update_linear_projects_and_issues(standardized_data, api_key):
     headers = {
         "Authorization": api_key,
         "Content-Type": "application/json"
@@ -89,12 +95,12 @@ def create_or_update_linear_issues(standardized_data, api_key):
 
     # Initialize statistics
     stats = {
-        "companies_processed": 0,
-        "companies_created": 0,
-        "companies_existing": 0,
-        "individuals_processed": 0,
-        "individuals_created": 0,
-        "individuals_existing": 0
+        "projects_processed": 0,
+        "projects_created": 0,
+        "projects_existing": 0,
+        "issues_processed": 0,
+        "issues_created": 0,
+        "issues_existing": 0
     }
 
     # Get the team ID
@@ -132,79 +138,95 @@ def create_or_update_linear_issues(standardized_data, api_key):
             # Update company progress bar
             company_progress.progress(len(processed_companies) / total_companies)
 
-            stats["companies_processed"] += 1
+            stats["projects_processed"] += 1
             processed_companies.add(company['name'])
 
-            # Check if company issue already exists
-            company_search_query = """
-            query($teamId: ID!, $title: String!) {
-                issues(
-                    filter: {team: {id: {eq: $teamId}}, title: {eq: $title}}
-                    first: 1
-                ) {
+            # Check if project already exists
+            project_search_query = """
+            query($name: String!) {
+                projects(filter: {name: {eqIgnoreCase: $name}}, first: 1) {
                     nodes {
                         id
-                        title
+                        name
                     }
                 }
             }
             """
             variables = {
-                "teamId": team_id,
-                "title": company['name']
+                "name": company['name']
             }
-            response = requests.post(url, json={"query": company_search_query, "variables": variables}, headers=headers)
+            response = requests.post(url, json={"query": project_search_query, "variables": variables}, headers=headers)
             response_data = response.json()
             if "errors" in response_data:
-                st.error(f"Error searching for company issue: {response_data['errors']}")
+                st.error(f"Error searching for project: {response_data['errors']}")
                 continue
-            existing_company_issues = response_data["data"]["issues"]["nodes"]
+            existing_projects = response_data["data"]["projects"]["nodes"]
 
-            if existing_company_issues:
-                company_issue_id = existing_company_issues[0]["id"]
-                stats["companies_existing"] += 1
+            if existing_projects:
+                project_id = existing_projects[0]["id"]
+                stats["projects_existing"] += 1
             else:
-                # Create new company issue
-                company_mutation = """
-                mutation($title: String!, $description: String!, $teamId: String!) {
-                    issueCreate(input: {title: $title, description: $description, teamId: $teamId}) {
+                # Create new project with truncated description
+                short_description = format_company_description(company)[:255]
+                project_mutation = """
+                mutation($name: String!, $description: String!, $teamId: String!) {
+                    projectCreate(input: {name: $name, description: $description, teamIds: [$teamId]}) {
                         success
-                        issue {
+                        project {
                             id
                         }
                     }
                 }
                 """
                 variables = {
-                    "title": company['name'],
-                    "description": format_company_description(company),
-                    "teamId": team_id
+                    "name": company['name'],
+                    "description": short_description,
+                    "teamId": str(team_id)  # Convert to string
                 }
-                response = requests.post(url, json={"query": company_mutation, "variables": variables}, headers=headers)
+                response = requests.post(url, json={"query": project_mutation, "variables": variables}, headers=headers)
                 response_data = response.json()
                 if "errors" in response_data:
-                    st.error(f"Error creating company issue: {response_data['errors']}")
+                    st.error(f"Error creating project: {response_data['errors']}")
                     continue
-                result = response_data["data"]["issueCreate"]
+                result = response_data["data"]["projectCreate"]
                 if result["success"]:
-                    company_issue_id = result["issue"]["id"]
-                    stats["companies_created"] += 1
+                    project_id = result["project"]["id"]
+                    stats["projects_created"] += 1
+
+                    # Create a document with full description
+                    full_description = format_company_full_description(company)
+                    document_mutation = """
+                    mutation($title: String!, $content: String!, $projectId: String!) {
+                        documentCreate(input: {title: $title, content: $content, projectId: $projectId}) {
+                            success
+                            document {
+                                id
+                            }
+                        }
+                    }
+                    """
+                    document_variables = {
+                        "title": f"{company['name']} - Full Description",
+                        "content": full_description,
+                        "projectId": str(project_id)  # Convert to string
+                    }
+                    document_response = requests.post(url, json={"query": document_mutation, "variables": document_variables}, headers=headers)
+                    document_data = document_response.json()
+                    if "errors" in document_data:
+                        st.error(f"Error creating document for project: {document_data['errors']}")
                 else:
-                    st.error(f"Failed to create issue for {company['name']}")
+                    st.error(f"Failed to create project for {company['name']}")
                     continue
 
-        # Process individual
-        stats["individuals_processed"] += 1
+        # Process individual as an issue
+        stats["issues_processed"] += 1
 
-        individual_title = f"{individual['first_name']} {individual['last_name']} - {individual['job_title']}"
+        issue_title = f"{individual['first_name']} {individual['last_name']} - {individual['job_title']}"
         
-        # Check if individual issue already exists
-        individual_search_query = """
-        query($teamId: ID!, $title: String!, $parentId: ID!) {
-            issues(
-                filter: {team: {id: {eq: $teamId}}, title: {eq: $title}, parent: {id: {eq: $parentId}}}
-                first: 1
-            ) {
+        # Check if issue already exists
+        issue_search_query = """
+        query($teamId: ID!, $title: String!, $projectId: ID!) {
+            issues(filter: {team: {id: {eq: $teamId}}, title: {eqIgnoreCase: $title}, project: {id: {eq: $projectId}}}, first: 1) {
                 nodes {
                     id
                     title
@@ -214,59 +236,62 @@ def create_or_update_linear_issues(standardized_data, api_key):
         """
         variables = {
             "teamId": team_id,
-            "title": individual_title,
-            "parentId": company_issue_id
+            "title": issue_title,
+            "projectId": project_id
         }
-        response = requests.post(url, json={"query": individual_search_query, "variables": variables}, headers=headers)
+        response = requests.post(url, json={"query": issue_search_query, "variables": variables}, headers=headers)
         response_data = response.json()
         if "errors" in response_data:
-            st.error(f"Error searching for individual issue: {response_data['errors']}")
+            st.error(f"Error searching for issue: {response_data['errors']}")
             continue
-        existing_individual_issues = response_data["data"]["issues"]["nodes"]
+        existing_issues = response_data["data"]["issues"]["nodes"]
 
-        if existing_individual_issues:
-            stats["individuals_existing"] += 1
+        if existing_issues:
+            stats["issues_existing"] += 1
         else:
-            # Create new individual issue
-            individual_mutation = """
-            mutation($title: String!, $description: String!, $teamId: String!, $parentId: String!) {
-                issueCreate(input: {title: $title, description: $description, teamId: $teamId, parentId: $parentId}) {
+            # Create new issue
+            issue_mutation = """
+            mutation($title: String!, $description: String!, $teamId: String!, $projectId: String!) {
+                issueCreate(input: {title: $title, description: $description, teamId: $teamId, projectId: $projectId}) {
                     success
+                    issue {
+                        id
+                    }
                 }
             }
             """
             variables = {
-                "title": individual_title,
+                "title": issue_title,
                 "description": format_individual_description(individual),
-                "teamId": team_id,
-                "parentId": company_issue_id
+                "teamId": str(team_id),  # Convert to string
+                "projectId": str(project_id)  # Convert to string
             }
-            response = requests.post(url, json={"query": individual_mutation, "variables": variables}, headers=headers)
+            response = requests.post(url, json={"query": issue_mutation, "variables": variables}, headers=headers)
             response_data = response.json()
             if "errors" in response_data:
-                st.error(f"Error creating individual issue: {response_data['errors']}")
+                st.error(f"Error creating issue: {response_data['errors']}")
             elif response_data["data"]["issueCreate"]["success"]:
-                stats["individuals_created"] += 1
+                stats["issues_created"] += 1
             else:
-                st.error(f"Failed to create issue for {individual_title}")
+                st.error(f"Failed to create issue for {issue_title}")
 
     # Clear the company progress bar after processing all companies
     company_progress.empty()
 
-    st.success("All issues created or updated successfully in Linear!")
+    st.success("All projects and issues created or updated successfully in Linear!")
 
     # Display statistics in a table
     st.write("Import Statistics:")
     stats_df = pd.DataFrame({
-        "Category": ["Companies", "Companies", "Companies", "Individuals", "Individuals", "Individuals"],
+        "Category": ["Projects", "Projects", "Projects", "Issues", "Issues", "Issues"],
         "Action": ["Processed", "Created", "Already Existing", "Processed", "Created", "Already Existing"],
         "Count": [
-            stats['companies_processed'],
-            stats['companies_created'],
-            stats['companies_existing'],
-            stats['individuals_processed'],
-            stats['individuals_created'],
-            stats['individuals_existing']
+            stats['projects_processed'],
+            stats['projects_created'],
+            stats['projects_existing'],
+            stats['issues_processed'],
+            stats['issues_created'],
+            stats['issues_existing']
         ]
     })
     st.table(stats_df)
@@ -293,10 +318,10 @@ if uploaded_file is not None:
         if st.button("Import to Linear"):
             if api_key:
                 with st.spinner("Importing data to Linear..."):
-                    create_or_update_linear_issues(standardized_data, api_key)
+                    create_or_update_linear_projects_and_issues(standardized_data, api_key)
             else:
                 st.error("Please enter your Linear API Key")
 
 st.write(
-    "This app imports leads from a CSV file into Linear, creating or updating company issues with individual sub-issues."
+    "This app imports leads from a CSV file into Linear, creating or updating projects for companies and issues for individuals."
 )
