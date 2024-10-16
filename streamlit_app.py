@@ -103,8 +103,8 @@ def create_or_update_linear_projects_and_issues(standardized_data, api_key):
         "issues_existing": 0
     }
 
-    # Get the team ID
-    with st.spinner("Fetching team information..."):
+    # Get the Sales team ID
+    with st.spinner("Fetching Sales team information..."):
         query = """
         query {
             teams {
@@ -120,31 +120,46 @@ def create_or_update_linear_projects_and_issues(standardized_data, api_key):
         if "errors" in response_data:
             st.error(f"Error fetching team information: {response_data['errors']}")
             return
-        team_id = response_data["data"]["teams"]["nodes"][0]["id"]
+        
+        sales_team = next((team for team in response_data["data"]["teams"]["nodes"] if team["name"] == "Sales"), None)
+        
+        if not sales_team:
+            st.error("Sales team not found. Please ensure you have a team named 'Sales' in your Linear workspace.")
+            return
+        
+        team_id = sales_team["id"]
+        st.success(f"Found Sales team with ID: {team_id}")
 
     # Get or create "New Contact" label
     label_query = """
     query($teamId: String!) {
-        issueLabels(filter: {team: {id: {eq: $teamId}}, name: {eq: "New Contact"}}) {
-            nodes {
-                id
-                name
+        team(id: $teamId) {
+            labels(filter: {name: {eq: "New Contact"}}) {
+                nodes {
+                    id
+                    name
+                }
             }
         }
     }
     """
     label_variables = {
-        "teamId": team_id
+        "teamId": str(team_id)  # Convert to string
     }
     label_response = requests.post(url, json={"query": label_query, "variables": label_variables}, headers=headers)
     label_data = label_response.json()
-    if label_data["data"]["issueLabels"]["nodes"]:
-        new_contact_label_id = label_data["data"]["issueLabels"]["nodes"][0]["id"]
+    if "errors" in label_data:
+        st.error(f"Error fetching 'New Contact' label: {label_data['errors']}")
+        return
+    
+    if label_data["data"]["team"]["labels"]["nodes"]:
+        new_contact_label_id = label_data["data"]["team"]["labels"]["nodes"][0]["id"]
+        st.success("Found existing 'New Contact' label")
     else:
         # Create "New Contact" label if it doesn't exist
         create_label_mutation = """
-        mutation($name: String!, $teamId: String!) {
-            issueLabelCreate(input: {name: $name, teamId: $teamId}) {
+        mutation($name: String!, $teamId: String!, $color: String!) {
+            issueLabelCreate(input: {name: $name, teamId: $teamId, color: $color}) {
                 success
                 issueLabel {
                     id
@@ -154,12 +169,17 @@ def create_or_update_linear_projects_and_issues(standardized_data, api_key):
         """
         create_label_variables = {
             "name": "New Contact",
-            "teamId": team_id
+            "teamId": str(team_id),  # Convert to string
+            "color": "#00FF00"  # You can change this color as needed
         }
         create_label_response = requests.post(url, json={"query": create_label_mutation, "variables": create_label_variables}, headers=headers)
         create_label_data = create_label_response.json()
+        if "errors" in create_label_data:
+            st.error(f"Error creating 'New Contact' label: {create_label_data['errors']}")
+            return
         if create_label_data["data"]["issueLabelCreate"]["success"]:
             new_contact_label_id = create_label_data["data"]["issueLabelCreate"]["issueLabel"]["id"]
+            st.success("Created new 'New Contact' label")
         else:
             st.error("Failed to create 'New Contact' label")
             return
