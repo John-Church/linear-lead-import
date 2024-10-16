@@ -29,15 +29,22 @@ def standardize_csv_data(df, csv_format):
                     'year_founded': row['Company Year Founded'],
                     'summary': row['Company Telescope Summary'],
                     'tags': row['Company Telescope Tags'],
+                    'follower_count': row['Company Linkedin Follower Count'],
+                    'landing_page_summary': row['Company Landing Page Summary'],
+                    'product_services_summary': row['Company Product Services Summary'],
+                    'pricing_summary': row['Company Pricing Summary'],
                 },
                 'individual': {
                     'first_name': row['First Name'],
                     'last_name': row['Last Name'],
                     'job_title': row['Prospect Job Title'],
+                    'prospect_info': row['Prospect Info'],
                     'email': row['Email'],
+                    'email_verification': row['Email Verification Status'],
                     'phone': row['Phone Numbers'],
                     'linkedin': row['Linkedin Profile'],
                     'location': f"{row['City']}, {row['State']}, {row['Country']}",
+                    'already_in_crm': row['Already in CRM'],
                 }
             })
     elif csv_format == 'export_contacts':
@@ -79,10 +86,20 @@ def format_company_description(company):
     return summary
 
 def format_company_full_description(company):
-    return "\n".join([f"{key.replace('_', ' ').title()}: {value}" for key, value in company.items() if value])
+    description = []
+    for key, value in company.items():
+        if value and key != 'name':  # Skip the name as it's used as the project title
+            formatted_key = key.replace('_', ' ').title()
+            description.append(f"{formatted_key}: {value}")
+    return "\n".join(description)
 
 def format_individual_description(individual):
-    return "\n".join([f"{key.replace('_', ' ').title()}: {value}" for key, value in individual.items() if value])
+    description = []
+    for key, value in individual.items():
+        if value:
+            formatted_key = key.replace('_', ' ').title()
+            description.append(f"{formatted_key}: {value}")
+    return "\n".join(description)
 
 def create_or_update_linear_projects_and_issues(standardized_data, api_key):
     headers = {
